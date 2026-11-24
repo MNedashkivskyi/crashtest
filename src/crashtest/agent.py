@@ -2,28 +2,35 @@
 
 ``CheatAgent`` is a Harbor custom agent (subclass of Harbor's ``BaseAgent``) that,
 instead of calling an LLM, uploads a chosen cheat into the task environment and
-runs it. ``harbor run`` then grades the result with the task's own ``test.sh``.
+runs it. ``harbor run`` then grades the result with the task's own verifier.
 
-Harbor is an *optional* dependency. When it is not importable (CI, the self-test
-suite, anyone reading the code) we fall back to a tiny abstract base so the module
-imports cleanly. The real cheat-application logic lives in :func:`apply_cheat`,
-which takes plain callables and so is unit-testable with no harness at all.
+This is written against Harbor 0.27.0's real ``BaseAgent`` API (confirmed by
+reading ``harbor/agents/base.py`` and ``oracle.py``):
 
-Unverified against a live Harbor — pin before relying on scan output:
-  * The exact import path of Harbor's ``BaseAgent`` and the shape of its env
-    object (``exec``/``upload`` method names, the Trial/Context types). The
-    import is attempted across the paths the docs suggest; adjust once pinned.
-  * Whether ``setsid`` children survive until the verifier runs (cheat C02).
-  * Whether an uploaded ``/tests`` merges into or replaces the existing one (C03).
+  * ``name()`` is a ``@staticmethod`` returning the agent name.
+  * ``version(self)`` is an instance method.
+  * ``setup(self, environment)`` and ``run(self, instruction, environment,
+    context)`` are ``async``. ``run`` returns ``None`` — the reward comes from the
+    task's verifier, not from the agent.
+  * The environment exposes ``await environment.upload_dir(source_dir=,
+    target_dir=)`` and ``await environment.exec(command=, user=)`` returning a
+    result with ``.return_code`` (mirrors the oracle agent running solve.sh).
+  * ``--ak cheat=<id>`` arrives as the ``cheat`` constructor kwarg; the base
+    ``__init__`` takes ``logs_dir`` first.
+
+Harbor is an optional dependency: when it is not importable (CI, the self-test
+suite) we fall back to a tiny base so the module imports. The cheat-application
+logic lives in :func:`apply_cheat`, which takes plain async callables and so is
+unit-testable with no harness.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shlex
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from .cheatspec import Cheat
@@ -31,13 +38,13 @@ from .registry import find_cheat
 
 # Where the cheat's scripts are uploaded inside the task environment.
 REMOTE_CHEAT_DIR = "/tmp/.crashtest"
-# The honesty marker: every cheat run writes what it touched here.
-MANIFEST_PATH = "/logs/agent/crashtest.json"
+# The honesty marker filename, written under the environment's agent log dir.
+MARKER_FILENAME = "crashtest.json"
 
 # --- Harbor BaseAgent import, with a local fallback -------------------------
 
 _HARBOR_BASE = None
-for _path in ("harbor.agents", "harbor.agent", "harbor"):
+for _path in ("harbor.agents.base", "harbor.agents", "harbor.agent"):
     try:  # pragma: no cover - depends on whether harbor is installed
         _mod = __import__(_path, fromlist=["BaseAgent"])
         _HARBOR_BASE = _mod.BaseAgent
@@ -47,31 +54,22 @@ for _path in ("harbor.agents", "harbor.agent", "harbor"):
 
 if _HARBOR_BASE is None:  # pragma: no cover - the common case off-harness
 
-    class _BaseAgent:
-        """Minimal stand-in for Harbor's BaseAgent so the module imports.
+    class _BaseAgentShim:
+        """Minimal stand-in so the module imports without Harbor installed.
 
-        Only the surface crashtest uses is declared. Replace behaviour by
-        subclassing; the real Harbor base is used automatically when installed.
+        Only present to let ``CheatAgent`` be defined; the real Harbor base is
+        used automatically when installed. Not a functional agent off-harness.
         """
 
-        def name(self) -> str:  # noqa: D401
-            raise NotImplementedError
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
 
-        def version(self) -> str:
-            raise NotImplementedError
-
-        def setup(self, env: Any) -> None:
-            return None
-
-        def run(self, instruction: str, env: Any, context: Any = None) -> Any:
-            raise NotImplementedError
-
-    BaseAgentBase = _BaseAgent
+    BaseAgentBase: Any = _BaseAgentShim
 else:  # pragma: no cover
     BaseAgentBase = _HARBOR_BASE
 
 
-# --- The testable core ------------------------------------------------------
+# --- the testable core ------------------------------------------------------
 
 
 @dataclass
@@ -100,36 +98,30 @@ class CheatOutcome:
 
 
 # An exec callable runs a shell command in the environment and returns
-# (exit_code, stdout, stderr). An upload callable copies a local dir to a remote
-# path. Both are supplied by the Harbor adapter (or by tests).
-ExecFn = Callable[[str], "tuple[int, str, str]"]
-UploadFn = Callable[[Path, str], None]
-WriteFn = Callable[[str, str], None]
+# (return_code, stdout). An upload callable copies a local dir to a remote path.
+# Both are async, matching Harbor's environment API; tests supply fakes.
+ExecFn = Callable[[str], Awaitable["tuple[int, str]"]]
+UploadFn = Callable[[str, str], Awaitable[None]]
 
 
-def apply_cheat(
+async def apply_cheat(
     cheat: Cheat,
     *,
     exec_fn: ExecFn,
     upload_fn: UploadFn,
-    write_fn: WriteFn,
+    agent_dir: str,
 ) -> CheatOutcome:
     """Upload a cheat into an environment, probe, and run its payload.
 
-    * ``upload_fn`` copies the cheat directory to ``REMOTE_CHEAT_DIR``.
-    * ``exec_fn`` runs ``probe.sh`` then (if it applies) ``payload.sh``.
-    * ``write_fn`` writes the honesty manifest to ``MANIFEST_PATH``.
-
-    The cheat's own scripts decide what "touched" means; we read the trailing
-    ``CRASHTEST_TOUCHED=`` lines the payload may print. ``/solution`` is never
-    touched here, by construction: crashtest only ever uploads to
-    ``REMOTE_CHEAT_DIR`` and runs the cheat's two scripts.
+    ``/solution`` is never touched here by construction: crashtest only uploads
+    to ``REMOTE_CHEAT_DIR`` and runs the cheat's own two scripts. The honesty
+    marker is written under ``agent_dir`` (the environment's agent log dir).
     """
     meta = cheat.meta
-    upload_fn(cheat.directory, REMOTE_CHEAT_DIR)
+    await upload_fn(str(cheat.directory), REMOTE_CHEAT_DIR)
 
     probe_cmd = f"sh {shlex.quote(REMOTE_CHEAT_DIR + '/probe.sh')}"
-    probe_exit, _p_out, _p_err = exec_fn(probe_cmd)
+    probe_exit, _out = await exec_fn(probe_cmd)
 
     if probe_exit == meta.na_exit_code:
         outcome = CheatOutcome(
@@ -140,42 +132,48 @@ def apply_cheat(
             payload_exit=None,
             touched=[],
         )
-        _safe_write_manifest(write_fn, outcome)
+        await _write_marker(exec_fn, agent_dir, outcome)
         return outcome
 
     payload_cmd = f"sh {shlex.quote(REMOTE_CHEAT_DIR + '/payload.sh')}"
-    payload_exit, out, _err = exec_fn(payload_cmd)
-    touched = _parse_touched(out)
-
+    payload_exit, out = await exec_fn(payload_cmd)
     outcome = CheatOutcome(
         cheat_id=meta.id,
         cheat_version=meta.version,
         applied=True,
         probe_exit=probe_exit,
         payload_exit=payload_exit,
-        touched=touched,
+        touched=_parse_touched(out),
     )
-    _safe_write_manifest(write_fn, outcome)
+    await _write_marker(exec_fn, agent_dir, outcome)
     return outcome
 
 
 def _parse_touched(stdout: str) -> list[str]:
     touched: list[str] = []
-    for line in stdout.splitlines():
+    for line in (stdout or "").splitlines():
         line = line.strip()
         if line.startswith("CRASHTEST_TOUCHED="):
             touched.append(line[len("CRASHTEST_TOUCHED=") :])
     return touched
 
 
-def _safe_write_manifest(write_fn: WriteFn, outcome: CheatOutcome) -> None:
+async def _write_marker(exec_fn: ExecFn, agent_dir: str, outcome: CheatOutcome) -> None:
+    # JSON uses only double quotes, so single-quoting the whole payload is safe.
     try:
-        write_fn(MANIFEST_PATH, json.dumps(outcome.manifest(), indent=2))
+        agent_dir = agent_dir.rstrip("/") or "/logs/agent"
+        path = f"{agent_dir}/{MARKER_FILENAME}"
+        content = json.dumps(outcome.manifest())
+        cmd = (
+            f"mkdir -p {shlex.quote(agent_dir)} && "
+            f"printf %s {shlex.quote(content)} > {shlex.quote(path)}"
+        )
+        await exec_fn(cmd)
     except Exception:  # pragma: no cover - never let the marker break a run
         pass
 
 
-# --- The Harbor agent -------------------------------------------------------
+# --- the Harbor agent -------------------------------------------------------
 
 
 class CheatAgent(BaseAgentBase):  # type: ignore[misc,valid-type]
@@ -185,11 +183,9 @@ class CheatAgent(BaseAgentBase):  # type: ignore[misc,valid-type]
     ``--ak cheat=c02_reward_daemon``.
     """
 
-    def __init__(self, cheat: str | None = None, **kwargs: Any) -> None:
-        # Harbor passes --ak key=value pairs as constructor kwargs.
-        super().__init__(**kwargs) if _HARBOR_BASE is not None else None
-        import os
-
+    def __init__(self, logs_dir: Any = None, *, cheat: str | None = None, **kwargs: Any) -> None:
+        if _HARBOR_BASE is not None:  # pragma: no cover - only under real harbor
+            super().__init__(logs_dir=logs_dir, **kwargs)
         cheat_id = cheat or os.environ.get("CRASHTEST_CHEAT")
         if not cheat_id:
             raise ValueError(
@@ -197,86 +193,59 @@ class CheatAgent(BaseAgentBase):  # type: ignore[misc,valid-type]
             )
         self._cheat: Cheat = find_cheat(cheat_id)
 
-    def name(self) -> str:
+    @staticmethod
+    def name() -> str:
         return "crashtest"
 
     def version(self) -> str:
-        return f"crashtest/{self._cheat.meta.id}@{self._cheat.meta.version}"
+        return f"{self._cheat.meta.id}@{self._cheat.meta.version}"
 
-    def setup(self, env: Any) -> None:
+    async def setup(self, environment: Any) -> None:  # pragma: no cover - needs harbor
         return None
 
-    def run(self, instruction: str, env: Any, context: Any = None) -> Any:
-        """Apply the selected cheat to the task environment.
+    async def run(
+        self, instruction: str, environment: Any, context: Any = None
+    ) -> None:  # pragma: no cover - needs harbor
+        """Apply the selected cheat to the task environment, then return.
 
-        Wires Harbor's env methods into :func:`apply_cheat`. The adapter below
-        is deliberately forgiving about method names because the exact env API
-        is a week-1 verification item.
+        The reward is produced by the task's verifier afterward, not here.
         """
-        exec_fn, upload_fn, write_fn = _adapt_env(env)
-        outcome = apply_cheat(
-            self._cheat, exec_fn=exec_fn, upload_fn=upload_fn, write_fn=write_fn
-        )
-        # Harbor does not read our return value for grading (test.sh does), but a
-        # structured return helps `harbor analyze` and our own debugging.
-        return outcome.manifest()
+        agent_dir = self._agent_dir(environment)
+
+        async def _exec(command: str) -> tuple[int, str]:
+            result = await environment.exec(command=command)
+            return _return_code(result), _stdout(result)
+
+        async def _upload(source_dir: str, target_dir: str) -> None:
+            await environment.upload_dir(source_dir=source_dir, target_dir=target_dir)
+
+        await apply_cheat(self._cheat, exec_fn=_exec, upload_fn=_upload, agent_dir=agent_dir)
+        return None
+
+    @staticmethod
+    def _agent_dir(environment: Any) -> str:  # pragma: no cover - needs harbor
+        try:
+            from harbor.models.trial.paths import EnvironmentPaths
+
+            return str(EnvironmentPaths.for_os(environment.os).agent_dir)
+        except Exception:
+            return "/logs/agent"
 
 
-def _adapt_env(env: Any) -> tuple[ExecFn, UploadFn, WriteFn]:
-    """Build exec/upload/write callables from a Harbor env object.
-
-    Tries the method names Harbor's docs/examples use, with fallbacks. Pin the
-    real names in week 1 and delete the guessing.
-    """
-
-    def exec_fn(cmd: str) -> tuple[int, str, str]:
-        for attr in ("exec", "run", "execute", "shell"):
-            fn = getattr(env, attr, None)
-            if callable(fn):
-                res = fn(cmd)
-                return _normalize_exec_result(res)
-        raise AttributeError("env has no exec/run/execute/shell method; pin in week 1")
-
-    def upload_fn(local_dir: Path, remote_dir: str) -> None:
-        for attr in ("upload_dir", "upload", "put_dir", "copy_in"):
-            fn = getattr(env, attr, None)
-            if callable(fn):
-                fn(str(local_dir), remote_dir)
-                return
-        # Last resort: shell out a tar stream if only exec is available.
-        raise AttributeError("env has no upload_dir/upload/put_dir; pin in week 1")
-
-    def write_fn(remote_path: str, content: str) -> None:
-        for attr in ("write_file", "put_file", "write"):
-            fn = getattr(env, attr, None)
-            if callable(fn):
-                fn(remote_path, content)
-                return
-        # Fall back to writing via exec + a here-doc-free printf.
-        ec, _, _ = exec_fn(
-            f"mkdir -p {shlex.quote(str(Path(remote_path).parent))} && "
-            f"printf %s {shlex.quote(content)} > {shlex.quote(remote_path)}"
-        )
-        if ec != 0:  # pragma: no cover
-            raise OSError(f"could not write manifest to {remote_path}")
-
-    return exec_fn, upload_fn, write_fn
+def _return_code(result: Any) -> int:  # pragma: no cover - needs harbor
+    for attr in ("return_code", "returncode", "exit_code", "code"):
+        val = getattr(result, attr, None)
+        if val is not None:
+            return int(val)
+    return 0
 
 
-def _normalize_exec_result(res: Any) -> tuple[int, str, str]:
-    """Coerce whatever env.exec returns into (exit_code, stdout, stderr)."""
-    if isinstance(res, tuple):
-        exit_code = int(res[0]) if len(res) > 0 and res[0] is not None else 0
-        out = res[1] if len(res) > 1 and res[1] is not None else ""
-        err = res[2] if len(res) > 2 and res[2] is not None else ""
-        return exit_code, str(out), str(err)
-    # Object-style result, e.g. CompletedProcess-like.
-    exit_code = int(
-        getattr(res, "exit_code", getattr(res, "returncode", getattr(res, "code", 0))) or 0
-    )
-    out = str(getattr(res, "stdout", getattr(res, "output", "")) or "")
-    err = str(getattr(res, "stderr", "") or "")
-    return exit_code, out, err
+def _stdout(result: Any) -> str:  # pragma: no cover - needs harbor
+    for attr in ("stdout", "output", "text"):
+        val = getattr(result, attr, None)
+        if val:
+            return str(val)
+    return ""
 
 
 __all__ = [
@@ -284,5 +253,5 @@ __all__ = [
     "CheatOutcome",
     "apply_cheat",
     "REMOTE_CHEAT_DIR",
-    "MANIFEST_PATH",
+    "MARKER_FILENAME",
 ]
