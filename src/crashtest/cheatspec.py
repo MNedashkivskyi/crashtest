@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
-from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -56,7 +55,7 @@ class CheatMeta(BaseModel):
     preconditions: list[str] = Field(default_factory=list)
     fix: str = ""
     false_positive_risk: str = "unknown"
-    credit: Optional[str] = None
+    credit: str | None = None
     # Exit code from probe.sh that means "not applicable to this task".
     na_exit_code: int = 3
 
@@ -90,7 +89,7 @@ class Cheat(BaseModel):
     directory: Path
     probe: Path
     payload: Path
-    files_dir: Optional[Path] = None
+    files_dir: Path | None = None
 
     model_config = {"arbitrary_types_allowed": True}
 

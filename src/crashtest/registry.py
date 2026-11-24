@@ -13,11 +13,11 @@ The registry is intentionally lazy and filesystem-driven: adding a cheat is
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from functools import lru_cache
 from importlib import resources
 from importlib.metadata import entry_points
 from pathlib import Path
-from typing import Iterable
 
 from .cheatspec import Cheat, load_cheat
 

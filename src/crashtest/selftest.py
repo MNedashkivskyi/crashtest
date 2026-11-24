@@ -27,7 +27,6 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from .cheatspec import Cheat
 from .registry import all_cheats, find_cheat
@@ -41,7 +40,7 @@ class FixtureCheck:
     cheat_id: str
     point: str  # "vuln-baseline" | "vuln-payload" | "hardened-payload"
     expected: float
-    reward: Optional[float]
+    reward: float | None
     ok: bool
     detail: str = ""
 
@@ -100,7 +99,7 @@ def _sandbox_env(sandbox: Path) -> dict:
     return env
 
 
-def _grade(sandbox: Path, env: dict) -> Optional[float]:
+def _grade(sandbox: Path, env: dict) -> float | None:
     grade = sandbox / "grade.sh"
     if not grade.is_file():
         return None
@@ -114,7 +113,7 @@ def _grade(sandbox: Path, env: dict) -> Optional[float]:
 
 def run_point(
     cheat: Cheat, kind: str, apply_payload: bool, fixtures_root: Path
-) -> Optional[float]:
+) -> float | None:
     """Run one fixture of a cheat and return the grader's reward (or None)."""
     fixture = fixtures_root / f"{kind}-{cheat.id}"
     if not fixture.is_dir():
@@ -134,7 +133,7 @@ def run_point(
         return _grade(sandbox, env)
 
 
-def check_cheat(cheat: Cheat, fixtures_root: Optional[Path] = None) -> list[FixtureCheck]:
+def check_cheat(cheat: Cheat, fixtures_root: Path | None = None) -> list[FixtureCheck]:
     root = fixtures_root or default_fixtures_root()
     plan = [
         ("vuln-baseline", "vuln", False, 0.0),
@@ -155,7 +154,7 @@ def check_cheat(cheat: Cheat, fixtures_root: Optional[Path] = None) -> list[Fixt
     return results
 
 
-def check_all(fixtures_root: Optional[Path] = None) -> list[FixtureCheck]:
+def check_all(fixtures_root: Path | None = None) -> list[FixtureCheck]:
     root = fixtures_root or default_fixtures_root()
     out: list[FixtureCheck] = []
     for cheat in all_cheats():
@@ -163,5 +162,5 @@ def check_all(fixtures_root: Optional[Path] = None) -> list[FixtureCheck]:
     return out
 
 
-def check_one(cheat_id: str, fixtures_root: Optional[Path] = None) -> list[FixtureCheck]:
+def check_one(cheat_id: str, fixtures_root: Path | None = None) -> list[FixtureCheck]:
     return check_cheat(find_cheat(cheat_id), fixtures_root)

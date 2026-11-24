@@ -62,6 +62,22 @@ def _select_cheats(args: argparse.Namespace):
     return cheats
 
 
+def _cmd_static(args: argparse.Namespace) -> int:
+    from .runner import discover_tasks
+    from .static import render_findings, scan_task_static
+
+    tasks = discover_tasks(args.path)
+    total = 0
+    for t in tasks:
+        findings = scan_task_static(t.path or args.path)
+        if findings:
+            print(f"== {t.id} ==")
+            print(render_findings(findings))
+            total += len(findings)
+    print(f"\n{len(tasks)} task(s), {total} hint(s).")
+    return 1 if total else 0
+
+
 def _cmd_scan(args: argparse.Namespace) -> int:
     from .runner import (
         HarborHarness,
@@ -140,6 +156,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_self.add_argument("cheat", nargs="?", help="a single cheat id (default: all)")
     p_self.set_defaults(func=_cmd_selftest)
+
+    p_static = sub.add_parser(
+        "static", help="fast no-Docker static hints over a task or directory of tasks"
+    )
+    p_static.add_argument("-p", "--path", required=True, help="task or directory of tasks")
+    p_static.set_defaults(func=_cmd_static)
 
     p_scan = sub.add_parser("scan", help="run controls + cheats over a dataset or task path")
     p_scan.add_argument("-p", "--path", help="path to a task or a directory of tasks")

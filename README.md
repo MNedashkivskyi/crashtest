@@ -72,10 +72,15 @@ harness and scorecard all import and run without it.
 ## Quickstart
 
 ```
-crashtest list                 # show the cheat catalog
+crashtest list                 # show the cheat catalog (see docs/cheats.md)
 crashtest list --priority P0   # just the MVP cheats
-# crashtest scan -p <task>     # full matrix (runner lands with PR3)
+crashtest selftest             # validate every cheat against its fixtures (no Harbor)
+crashtest static -p <task>     # fast no-Docker hints over a task
+crashtest scan   -p <task>     # the real matrix via `harbor run` (needs Harbor; --dry-run otherwise)
 ```
+
+See [`docs/usage.md`](docs/usage.md) for all commands, the GitHub Action, and how
+to add a cheat.
 
 ## Status
 

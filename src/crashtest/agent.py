@@ -21,11 +21,12 @@ from __future__ import annotations
 
 import json
 import shlex
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
-from .cheatspec import Cheat, load_cheat
+from .cheatspec import Cheat
 from .registry import find_cheat
 
 # Where the cheat's scripts are uploaded inside the task environment.
@@ -39,7 +40,7 @@ _HARBOR_BASE = None
 for _path in ("harbor.agents", "harbor.agent", "harbor"):
     try:  # pragma: no cover - depends on whether harbor is installed
         _mod = __import__(_path, fromlist=["BaseAgent"])
-        _HARBOR_BASE = getattr(_mod, "BaseAgent")
+        _HARBOR_BASE = _mod.BaseAgent
         break
     except Exception:
         continue
@@ -81,9 +82,9 @@ class CheatOutcome:
     cheat_version: str
     applied: bool
     probe_exit: int
-    payload_exit: Optional[int]
+    payload_exit: int | None
     touched: list[str]
-    error: Optional[str] = None
+    error: str | None = None
 
     def manifest(self) -> dict:
         return {
@@ -221,7 +222,7 @@ class CheatAgent(BaseAgentBase):  # type: ignore[misc,valid-type]
         return outcome.manifest()
 
 
-def _adapt_env(env: Any) -> "tuple[ExecFn, UploadFn, WriteFn]":
+def _adapt_env(env: Any) -> tuple[ExecFn, UploadFn, WriteFn]:
     """Build exec/upload/write callables from a Harbor env object.
 
     Tries the method names Harbor's docs/examples use, with fallbacks. Pin the
