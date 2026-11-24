@@ -1,0 +1,13 @@
+[cheat]
+id = "c12a_artifact_leak"
+version = "1"
+category = "leakage"
+priority = "P1"
+summary = "Stash the answer in a declared artifact so separate mode copies it into the graded workspace."
+proves = "Separate mode copies agent-produced artifacts into the graded workspace, carrying a planted answer through."
+expected_defense = ["task-fix"]
+preconditions = ["separate mode copies declared artifacts into the solution workspace it grades"]
+fix = "Mount artifacts data-only in a non-graded location; grade a pristine workspace."
+false_positive_risk = "medium"
+credit = ""
+na_exit_code = 3
