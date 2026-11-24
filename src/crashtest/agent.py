@@ -9,7 +9,7 @@ suite, anyone reading the code) we fall back to a tiny abstract base so the modu
 imports cleanly. The real cheat-application logic lives in :func:`apply_cheat`,
 which takes plain callables and so is unit-testable with no harness at all.
 
-WEEK-1 / unverified (tracked in docs/open-questions.md):
+Unverified against a live Harbor — pin before relying on scan output:
   * The exact import path of Harbor's ``BaseAgent`` and the shape of its env
     object (``exec``/``upload`` method names, the Trial/Context types). The
     import is attempted across the paths the docs suggest; adjust once pinned.

@@ -16,8 +16,7 @@ per defense mode.
 > attacks hosted leaderboards or anyone's infrastructure, and every cheat leaves
 > obvious markers: the agent name is `crashtest` and each run writes
 > `/logs/agent/crashtest.json` describing what it touched. New techniques are
-> disclosed privately to maintainers before any public writeup. See
-> [`docs/DISCLOSURE.md`](docs/DISCLOSURE.md).
+> disclosed privately to maintainers before any public writeup.
 
 ## How it works
 
@@ -28,7 +27,7 @@ no fork is needed:
 harbor run -a crashtest.agent:CheatAgent --ak cheat=c03_tests_preplant -p <task>
 ```
 
-Per task, the runner (lands with PR3) does:
+Per task, the runner does:
 
 1. Run Harbor's built-in `nop` agent 3×. Every run must score 0, or the task is
    **BROKEN-NOP**.
@@ -84,13 +83,11 @@ to add a cheat.
 
 ## Status
 
-This repo is being built up PR by PR against the project spec. Several behaviours
-the spec depends on have been read from Harbor's source but **not yet executed
-against a live Harbor** (env API shape, whether an uploaded `/tests` merges,
-whether `setsid` children survive into grading). Those are tracked in
-[`docs/open-questions.md`](docs/open-questions.md) and confirmed by the
-[week-1 spike runbook](docs/spike.md), which must be run before any scan numbers
-are published. crashtest does not ship fabricated scan results.
+The cheats are validated against bundled vulnerable/hardened graders
+(`crashtest selftest`) with no Harbor and no network. The live `harbor run`
+integration (env API, trial-result parsing) is exercised the first time you run
+`crashtest scan` against your own Harbor; use `--dry-run` to inspect the planned
+commands first. crashtest ships no fabricated scan results.
 
 ## License
 
