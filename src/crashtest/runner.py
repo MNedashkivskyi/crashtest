@@ -26,7 +26,6 @@ import json
 import re
 import shlex
 import subprocess
-import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -165,18 +164,6 @@ def parse_result_json(path: str | Path) -> dict[str, float | None]:
     return out
 
 
-def _latest_result_json(since: float, jobs_root: str = JOBS_ROOT) -> str | None:
-    """Newest ``<jobs_root>/*/result.json`` produced at or after ``since`` (epoch s)."""
-    root = Path(jobs_root)
-    if not root.is_dir():
-        return None
-    fresh = [p for p in root.glob("*/result.json") if p.stat().st_mtime >= since - 1]
-    candidates = fresh or list(root.glob("*/result.json"))
-    if not candidates:
-        return None
-    return str(max(candidates, key=lambda p: p.stat().st_mtime))
-
-
 # --- the real, harbor-driving harness --------------------------------------
 
 
@@ -205,7 +192,6 @@ class HarborHarness:
             )
         errored = False
         timed_out = False
-        t0 = time.time()
         output = ""
         try:
             proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
@@ -219,7 +205,7 @@ class HarborHarness:
         raw_path: str | None = None
         if not errored and not timed_out:
             try:
-                raw_path = self._result_path(output, t0)
+                raw_path = self._result_path(output)
                 per_task = parse_result_json(raw_path) if raw_path else {}
                 reward = per_task.get(spec.task.id)
                 if reward is None and len(per_task) == 1:
@@ -279,30 +265,26 @@ class HarborHarness:
         if cfg.dry_run:
             print("dry-run: " + " ".join(shlex.quote(c) for c in cmd))
             return {}
-        t0 = time.time()
         try:
             proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
             output = (proc.stdout or "") + (proc.stderr or "")
         except Exception:
             return {}
-        raw = self._result_path(output, t0)
+        raw = self._result_path(output)
         return parse_result_json(raw) if raw else {}
 
-    def _result_path(self, output: str, since: float) -> str | None:
+    def _result_path(self, output: str) -> str | None:
         """The result.json for the run that just finished.
 
-        Prefer the exact path harbor printed (immune to overlapping runs); fall
-        back to the newest file only if that line is missing. Ignore a file that
-        is not a completed run.
+        ONLY the exact path harbor printed ("Results written to ..."). There is
+        deliberately no newest-file fallback: when a run produces no output of its
+        own (e.g. the agent failed to execute), reading some other run's result
+        manufactures false verdicts. No printed path => treat the run as failed
+        (reward None => the cell becomes ERROR, never a HOLE).
         """
         path = result_path_from_output(output)
-        if path and Path(path).is_file() and _run_complete(path):
-            return path
         if path and Path(path).is_file():
-            return path  # printed but completeness unknown; still the right run
-        fallback = _latest_result_json(since, self.jobs_root)
-        if fallback and _run_complete(fallback):
-            return fallback
+            return path
         return None
 
     @staticmethod
