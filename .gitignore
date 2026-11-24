@@ -221,3 +221,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# crashtest scan output
+.crashtest-jobs/
+scorecard.json
+scorecard.md
+scorecard.sarif
+campaigns/**/results/
