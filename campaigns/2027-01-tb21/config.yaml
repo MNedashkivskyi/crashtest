@@ -1,0 +1,46 @@
+# crashtest campaign: Terminal-Bench 2.1 + friends, 2027-01
+#
+# Documents the planned public scan (the spec's "Datasets to scan" table). The
+# tool itself is driven by CLI flags today; this file is the campaign's recipe and
+# the record of what was run. Fill the pins at run time and commit the resulting
+# scorecard.md next to this file. The results/ directory is git-ignored (regenerate
+# it from these settings).
+
+priority: ["P0", "P1"]
+ablation: true
+
+# Determinism pins — fill from the actual run and copy into the scorecard header.
+pins:
+  harbor_commit: TBD
+  dataset_commit: TBD
+  image_digest: per-task
+
+datasets:
+  - id: terminal-bench@2.0
+    tasks: 89
+    plan: full
+  - id: terminal-bench-2-1          # scan from the git repo with -p
+    source: git-repo
+    tasks: 89
+    plan: full
+  - id: terminal-bench-pro
+    tasks: 200
+    plan: full
+  - id: swebench-verified
+    tasks: 500
+    plan: stratified-100
+  - id: swesmith
+    tasks: 100
+    plan: full
+  - id: termigen-environments
+    tasks: 3566
+    plan: sample-300
+  - id: seta-env
+    tasks: 1376
+    plan: optional
+  - id: swebenchpro
+    tasks: 731
+    plan: optional
+
+# Cut line if time slips (from the spec): drop P2 cheats, termigen and swebenchpro;
+# keep TB 2.0/2.1, the defense matrix and the upstream PRs.
