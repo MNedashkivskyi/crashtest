@@ -8,8 +8,7 @@ code-scanning annotations from the Action.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field
 
@@ -29,8 +28,8 @@ _CELL_SYMBOL = {
 
 class Scorecard(BaseModel):
     schema_version: str = SCHEMA_VERSION
-    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    pins: dict[str, Optional[str]] = Field(default_factory=dict)
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    pins: dict[str, str | None] = Field(default_factory=dict)
     config: dict[str, object] = Field(default_factory=dict)
     controls: list[TaskControl] = Field(default_factory=list)
     cells: list[CellResult] = Field(default_factory=list)
@@ -63,8 +62,8 @@ def build_scorecard(
     controls: list[TaskControl],
     cells: list[CellResult],
     *,
-    pins: Optional[dict] = None,
-    config: Optional[dict] = None,
+    pins: dict | None = None,
+    config: dict | None = None,
 ) -> Scorecard:
     return Scorecard(
         pins=pins or {},

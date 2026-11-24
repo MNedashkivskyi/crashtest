@@ -1,7 +1,7 @@
 """Runner orchestration tests, driven by a fake harness (no Harbor)."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional
 
 from crashtest.results import CellVerdict, TaskVerdict, TrialKind, TrialRecord
 from crashtest.runner import (
@@ -17,7 +17,7 @@ from crashtest.runner import (
 class FakeHarness:
     """Returns (reward, applied) for each spec via a supplied function."""
 
-    fn: Callable[[TrialSpec], tuple[Optional[float], Optional[bool]]]
+    fn: Callable[[TrialSpec], tuple[float | None, bool | None]]
 
     def run(self, spec: TrialSpec, cfg: ScanConfig) -> TrialRecord:
         reward, applied = self.fn(spec)

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import enum
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -52,25 +51,25 @@ class TrialRecord(BaseModel):
     task_id: str
     dataset: str
     kind: TrialKind
-    cheat_id: Optional[str] = None
+    cheat_id: str | None = None
     attempt: int = 0  # 0-based index within this cell/control
 
     # None reward means the grader produced no parseable reward (treated as error).
-    reward: Optional[float] = None
-    applied: Optional[bool] = None  # cheat probe result; None for controls
+    reward: float | None = None
+    applied: bool | None = None  # cheat probe result; None for controls
     errored: bool = False
     timed_out: bool = False
-    duration_s: Optional[float] = None
+    duration_s: float | None = None
 
     # Determinism pins, copied into every record and the scorecard header.
-    harbor_commit: Optional[str] = None
-    dataset_commit: Optional[str] = None
-    image_digest: Optional[str] = None
+    harbor_commit: str | None = None
+    dataset_commit: str | None = None
+    image_digest: str | None = None
 
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = None
-    raw_trial_path: Optional[str] = None  # path to Harbor's own trial JSON
-    notes: Optional[str] = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    raw_trial_path: str | None = None  # path to Harbor's own trial JSON
+    notes: str | None = None
 
     @property
     def scored_one(self) -> bool:
@@ -83,8 +82,8 @@ class TaskControl(BaseModel):
     task_id: str
     dataset: str
     verdict: TaskVerdict
-    nop_rewards: list[Optional[float]] = Field(default_factory=list)
-    oracle_rewards: list[Optional[float]] = Field(default_factory=list)
+    nop_rewards: list[float | None] = Field(default_factory=list)
+    oracle_rewards: list[float | None] = Field(default_factory=list)
 
 
 class CellResult(BaseModel):
@@ -94,23 +93,23 @@ class CellResult(BaseModel):
     dataset: str
     cheat_id: str
     verdict: CellVerdict
-    rewards: list[Optional[float]] = Field(default_factory=list)
-    applied: Optional[bool] = None
+    rewards: list[float | None] = Field(default_factory=list)
+    applied: bool | None = None
     # Set by the ablation pass: does the matching defense flip this HOLE to 0?
-    defense_flips: Optional[dict[str, bool]] = None
+    defense_flips: dict[str, bool] | None = None
 
 
-def _is_one(r: Optional[float]) -> bool:
+def _is_one(r: float | None) -> bool:
     return r is not None and r >= 1.0
 
 
-def _is_zero(r: Optional[float]) -> bool:
+def _is_zero(r: float | None) -> bool:
     return r is not None and r < 1.0
 
 
 def classify_controls(
-    nop_rewards: list[Optional[float]],
-    oracle_rewards: list[Optional[float]],
+    nop_rewards: list[float | None],
+    oracle_rewards: list[float | None],
 ) -> TaskVerdict:
     """Classify a task from its control rewards.
 
@@ -147,9 +146,9 @@ def classify_controls(
 
 
 def classify_cell(
-    rewards: list[Optional[float]],
+    rewards: list[float | None],
     *,
-    applied: Optional[bool],
+    applied: bool | None,
     errored: bool = False,
     timed_out: bool = False,
 ) -> CellVerdict:

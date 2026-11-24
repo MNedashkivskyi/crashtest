@@ -21,10 +21,10 @@ import json
 import os
 import shlex
 import subprocess
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional, Protocol
+from typing import Protocol
 
 from .cheatspec import Cheat
 from .registry import all_cheats
@@ -47,17 +47,17 @@ _TASK_MARKERS = ("tests", "solution", "task.toml", "task.yaml", "environment", "
 class TaskRef:
     id: str
     dataset: str = ""
-    path: Optional[str] = None
-    git_commit: Optional[str] = None
+    path: str | None = None
+    git_commit: str | None = None
 
 
 @dataclass
 class TrialSpec:
     task: TaskRef
     kind: TrialKind
-    cheat_id: Optional[str] = None
+    cheat_id: str | None = None
     attempt: int = 0
-    defense: Optional[str] = None  # ablation: run with this defense mode applied
+    defense: str | None = None  # ablation: run with this defense mode applied
 
 
 @dataclass
@@ -69,13 +69,13 @@ class ScanConfig:
     oracle_agent: str = "oracle"
     cheat_agent: str = "crashtest.agent:CheatAgent"
     n_concurrent: int = 1
-    agent_timeout_multiplier: Optional[float] = None
+    agent_timeout_multiplier: float | None = None
     # Determinism pins, copied into every record and the scorecard header.
-    harbor_commit: Optional[str] = None
-    dataset_commit: Optional[str] = None
-    image_digest: Optional[str] = None
+    harbor_commit: str | None = None
+    dataset_commit: str | None = None
+    image_digest: str | None = None
     ablation: bool = False
-    output_root: Optional[str] = None
+    output_root: str | None = None
     dry_run: bool = False
 
 
@@ -117,7 +117,7 @@ class HarborHarness:
     """
 
     def run(self, spec: TrialSpec, cfg: ScanConfig) -> TrialRecord:
-        started = datetime.now(timezone.utc)
+        started = datetime.now(UTC)
         cmd, out_dir = self.build_command(spec, cfg)
         if cfg.dry_run:
             return TrialRecord(
@@ -129,7 +129,7 @@ class HarborHarness:
                 reward=None,
                 notes="dry-run: " + " ".join(shlex.quote(c) for c in cmd),
                 started_at=started,
-                finished_at=datetime.now(timezone.utc),
+                finished_at=datetime.now(UTC),
             )
         errored = False
         timed_out = False
@@ -140,9 +140,9 @@ class HarborHarness:
         except Exception:
             errored = True
 
-        reward: Optional[float] = None
-        applied: Optional[bool] = None
-        raw_path: Optional[str] = None
+        reward: float | None = None
+        applied: bool | None = None
+        raw_path: str | None = None
         if not errored and not timed_out:
             try:
                 raw_path = self.find_trial_json(out_dir)
@@ -165,7 +165,7 @@ class HarborHarness:
             dataset_commit=cfg.dataset_commit,
             image_digest=cfg.image_digest,
             started_at=started,
-            finished_at=datetime.now(timezone.utc),
+            finished_at=datetime.now(UTC),
             raw_trial_path=raw_path,
         )
 
@@ -197,7 +197,7 @@ class HarborHarness:
         cmd += ["-o", out_dir]
         return cmd, out_dir
 
-    def find_trial_json(self, out_dir: str) -> Optional[str]:
+    def find_trial_json(self, out_dir: str) -> str | None:
         base = Path(out_dir)
         if not base.exists():
             return None
@@ -206,7 +206,7 @@ class HarborHarness:
         candidates = sorted(base.rglob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
         return str(candidates[0]) if candidates else None
 
-    def extract_reward(self, trial_json_path: str) -> Optional[float]:
+    def extract_reward(self, trial_json_path: str) -> float | None:
         data = json.loads(Path(trial_json_path).read_text())
         # Try the documented shapes in order.
         for key in ("reward", "score", "result"):
@@ -218,7 +218,7 @@ class HarborHarness:
                     return float(val["reward"])
         return None
 
-    def extract_applied(self, out_dir: str) -> Optional[bool]:
+    def extract_applied(self, out_dir: str) -> bool | None:
         # Read crashtest's own manifest if Harbor surfaced it in the job dir.
         for man in Path(out_dir).rglob("crashtest.json"):
             try:
@@ -318,7 +318,7 @@ def _ablate(task: TaskRef, cheat: Cheat, harness: Harness, cfg: ScanConfig) -> d
 
 def run_scan(
     tasks: list[TaskRef],
-    cheats: Optional[list[Cheat]],
+    cheats: list[Cheat] | None,
     harness: Harness,
     cfg: ScanConfig,
 ) -> tuple[list[TaskControl], list[CellResult]]:
@@ -332,7 +332,7 @@ def run_scan(
     return controls, cells
 
 
-def collect_pins(cfg: ScanConfig) -> dict[str, Optional[str]]:
+def collect_pins(cfg: ScanConfig) -> dict[str, str | None]:
     """Best-effort determinism pins for the scorecard header."""
     harbor_commit = cfg.harbor_commit
     if harbor_commit is None:

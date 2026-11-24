@@ -1,0 +1,99 @@
+name: "crashtest scan"
+description: "Run crashtest cheats against changed/benchmarked Harbor tasks and fail on any HOLE."
+branding:
+  icon: "shield"
+  color: "red"
+
+inputs:
+  tasks-path:
+    description: "Path to a task or a directory of tasks to scan."
+    required: false
+    default: "tasks"
+  priority:
+    description: "Cheat priority to run (P0/P1/P2)."
+    required: false
+    default: "P0"
+  crashtest-ref:
+    description: "Git ref of crashtest to install (branch, tag or SHA)."
+    required: false
+    default: "master"
+  install-harbor:
+    description: "Install Harbor (needed for a real scan; set false for a dry-run)."
+    required: false
+    default: "true"
+  dry-run:
+    description: "Build and print the harbor commands without running them."
+    required: false
+    default: "false"
+  sarif:
+    description: "Also emit a SARIF file (scorecard.sarif)."
+    required: false
+    default: "true"
+  fail-on-hole:
+    description: "Fail the job if any confirmed HOLE is found."
+    required: false
+    default: "true"
+
+outputs:
+  scorecard:
+    description: "Path to the generated scorecard.md."
+    value: ${{ steps.scan.outputs.scorecard }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install crashtest
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        pip install "crashtest @ git+https://github.com/MNedashkivskyi/crashtest@${{ inputs.crashtest-ref }}"
+        if [ "${{ inputs.install-harbor }}" = "true" ]; then
+          pip install harbor || echo "::warning::could not install harbor; falling back to --dry-run"
+        fi
+
+    - name: Scan
+      id: scan
+      shell: bash
+      run: |
+        set -o pipefail
+        args="-p '${{ inputs.tasks-path }}' --priority '${{ inputs.priority }}' -o scorecard"
+        [ "${{ inputs.sarif }}" = "true" ] && args="$args --sarif"
+        if [ "${{ inputs.dry-run }}" = "true" ] || ! command -v harbor >/dev/null 2>&1; then
+          args="$args --dry-run"
+        fi
+        echo "crashtest scan $args"
+        set +e
+        eval crashtest scan $args
+        code=$?
+        set -e
+        echo "scorecard=scorecard.md" >> "$GITHUB_OUTPUT"
+        echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+
+    - name: Step summary
+      if: always()
+      shell: bash
+      run: |
+        {
+          echo "## crashtest scorecard";
+          if [ -f scorecard.md ]; then cat scorecard.md; else echo "_no scorecard produced_"; fi
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload SARIF
+      if: always() && inputs.sarif == 'true' && hashFiles('scorecard.sarif') != ''
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: scorecard.sarif
+
+    - name: Gate
+      if: always()
+      shell: bash
+      run: |
+        if [ "${{ inputs.fail-on-hole }}" = "true" ] && [ "${{ steps.scan.outputs.exit_code }}" != "0" ]; then
+          echo "::error::crashtest found at least one HOLE (see the scorecard in the step summary)."
+          exit 1
+        fi
