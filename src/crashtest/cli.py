@@ -27,6 +27,30 @@ def _cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_selftest(args: argparse.Namespace) -> int:
+    from .selftest import check_all, check_one
+
+    results = check_one(args.cheat) if args.cheat else check_all()
+    by_cheat: dict[str, list] = {}
+    for r in results:
+        by_cheat.setdefault(r.cheat_id, []).append(r)
+
+    failed = 0
+    for cheat_id, checks in sorted(by_cheat.items()):
+        bad = [c for c in checks if not c.ok]
+        status = "PASS" if not bad else "FAIL"
+        print(f"[{status}] {cheat_id}")
+        for c in checks:
+            mark = "ok" if c.ok else "XX"
+            extra = f"  ({c.detail})" if c.detail else ""
+            print(f"    {mark} {c.point:<18} expected={c.expected} reward={c.reward}{extra}")
+        failed += len(bad)
+
+    print()
+    print(f"{len(by_cheat)} cheats checked, {failed} failing point(s).")
+    return 0 if failed == 0 else 1
+
+
 def _cmd_scan(args: argparse.Namespace) -> int:
     try:
         from .runner import run_scan  # noqa: F401
@@ -47,6 +71,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_list = sub.add_parser("list", help="list discovered cheats")
     p_list.set_defaults(func=_cmd_list)
+
+    p_self = sub.add_parser(
+        "selftest", help="validate cheats against their vuln/hardened fixtures (no Harbor)"
+    )
+    p_self.add_argument("cheat", nargs="?", help="a single cheat id (default: all)")
+    p_self.set_defaults(func=_cmd_selftest)
 
     p_scan = sub.add_parser("scan", help="run controls + cheats over a dataset or task path")
     p_scan.add_argument("-p", "--path", help="path to a task or a directory of tasks")
