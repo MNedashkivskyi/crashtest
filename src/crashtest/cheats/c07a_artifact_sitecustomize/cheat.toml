@@ -1,0 +1,13 @@
+[cheat]
+id = "c07a_artifact_sitecustomize"
+version = "1"
+category = "harness-hijack"
+priority = "P1"
+summary = "C07 sitecustomize carried inside a declared artifact that separate mode puts on the verifier's Python path."
+proves = "Separate-verifier mode can be hijacked via artifacts placed on the Python path."
+expected_defense = ["task-fix"]
+preconditions = ["separate mode adds the artifact dir to the verifier's Python path"]
+fix = "Copy data-only artifacts off the Python path; run python isolated (-I)."
+false_positive_risk = "low"
+credit = ""
+na_exit_code = 3

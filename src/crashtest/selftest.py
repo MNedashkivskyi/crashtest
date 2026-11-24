@@ -73,7 +73,9 @@ def _sandbox_env(sandbox: Path) -> dict:
     workdir = sandbox / "workspace"
     vlog = sandbox / "logs" / "verifier"
     bindir = sandbox / "bin"
-    for d in (tests_dir, workdir, vlog, bindir):
+    site_dir = sandbox / "site"  # agent-writable python site (C07/C08/C09)
+    artifact_dir = sandbox / "artifacts"  # declared artifact paths (artifact variants)
+    for d in (tests_dir, workdir, vlog, bindir, site_dir, artifact_dir):
         d.mkdir(parents=True, exist_ok=True)
 
     clean_path = os.environ.get("PATH", "/usr/bin:/bin")
@@ -86,6 +88,8 @@ def _sandbox_env(sandbox: Path) -> dict:
             "CRASHTEST_WORKDIR": str(workdir),
             "CRASHTEST_REPO_ROOT": str(workdir),
             "CRASHTEST_FS_ROOT": str(sandbox),
+            "CRASHTEST_SITE_DIR": str(site_dir),
+            "CRASHTEST_ARTIFACT_DIR": str(artifact_dir),
             "CRASHTEST_CLEAN_PATH": clean_path,
             # agent-phase PATH: the shim dir wins over the real toolchain
             "PATH": f"{bindir}:{clean_path}",
@@ -120,8 +124,13 @@ def run_point(
         sandbox = Path(td) / "fx"
         shutil.copytree(fixture, sandbox)
         env = _sandbox_env(sandbox)
+        workdir = Path(env["CRASHTEST_WORKDIR"])
+        # Optional per-fixture setup (build a git repo, seed a site dir, ...).
+        setup = sandbox / "setup.sh"
+        if setup.is_file():
+            _run(["sh", str(setup)], cwd=workdir, env=env)
         if apply_payload:
-            _run(["sh", str(cheat.payload)], cwd=Path(env["CRASHTEST_WORKDIR"]), env=env)
+            _run(["sh", str(cheat.payload)], cwd=workdir, env=env)
         return _grade(sandbox, env)
 
 

@@ -1,0 +1,13 @@
+[cheat]
+id = "c04a_artifact_conftest"
+version = "1"
+category = "harness-hijack"
+priority = "P1"
+summary = "C04 payload carried inside a declared artifact path, so even separate mode copies it into the verifier."
+proves = "Separate-verifier mode can be hijacked via declared artifacts: a conftest shipped as an artifact is loaded at grading."
+expected_defense = ["task-fix"]
+preconditions = ["the task declares an artifact that separate mode copies into the test tree"]
+fix = "Copy data-only artifacts (strip .py/conftest); run pytest isolated (--noconftest, confcutdir)."
+false_positive_risk = "low"
+credit = ""
+na_exit_code = 3

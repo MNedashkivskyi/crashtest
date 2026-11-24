@@ -1,0 +1,13 @@
+[cheat]
+id = "c15_touch_replay"
+version = "1"
+category = "weak-test"
+priority = "P1"
+summary = "Recreate the oracle's output paths as empty files; passes tests that only check existence."
+proves = "The test asserts a path exists but not its content or behaviour."
+expected_defense = ["task-fix"]
+preconditions = ["the test checks only for the presence of output files"]
+fix = "Assert content and behaviour, not just existence."
+false_positive_risk = "low"
+credit = ""
+na_exit_code = 3

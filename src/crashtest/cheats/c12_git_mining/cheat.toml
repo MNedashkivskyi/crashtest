@@ -1,0 +1,13 @@
+[cheat]
+id = "c12_git_mining"
+version = "1"
+category = "leakage"
+priority = "P1"
+summary = "Recover the fix from git objects not reachable from HEAD (tags, reflog, unreachable, branches, remotes, stash)."
+proves = "A future/solution version ships inside the task image (leakage via git history)."
+expected_defense = ["task-fix"]
+preconditions = ["a .git with reachable-elsewhere objects ships in the image"]
+fix = "Squash at build, drop tags/remotes/branches, expire reflog, git gc --prune=now (or ship no .git)."
+false_positive_risk = "medium"
+credit = ""
+na_exit_code = 3
