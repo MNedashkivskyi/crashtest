@@ -62,11 +62,27 @@ guard: release is blocked if any fixture fails.
 
 ```
 uv pip install -e ".[dev]"          # tool + test deps, no Harbor needed
-uv pip install -e ".[dev,harbor]"   # add this on a machine where you run scans
 ```
 
 Harbor is an **optional** dependency. The result model, cheat registry, fixture
 harness and scorecard all import and run without it.
+
+### To run real scans (needs Harbor)
+
+Harbor loads a custom agent by importing it **inside Harbor's own Python
+environment**, so `crashtest` must be importable from there. If Harbor is
+installed as a `uv` tool (`uv tool install harbor`), inject crashtest into that
+tool's environment:
+
+```
+uv tool install harbor --with-editable /path/to/crashtest --force
+```
+
+(Use `--with` instead of `--with-editable` if your `uv` doesn't accept it.) If
+instead you install Harbor into this project's venv (`pip install harbor`; needs
+Python ≥ 3.12), run that venv's `harbor` so both share one environment. A plain
+`uv tool install harbor` on its own cannot see crashtest and fails with
+`No module named 'crashtest'`.
 
 ## Quickstart
 
