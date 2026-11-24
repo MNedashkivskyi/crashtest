@@ -88,8 +88,9 @@ This repo is being built up PR by PR against the project spec. Several behaviour
 the spec depends on have been read from Harbor's source but **not yet executed
 against a live Harbor** (env API shape, whether an uploaded `/tests` merges,
 whether `setsid` children survive into grading). Those are tracked in
-[`docs/open-questions.md`](docs/open-questions.md) and must be confirmed before
-any scan numbers are published. crashtest does not ship fabricated scan results.
+[`docs/open-questions.md`](docs/open-questions.md) and confirmed by the
+[week-1 spike runbook](docs/spike.md), which must be run before any scan numbers
+are published. crashtest does not ship fabricated scan results.
 
 ## License
 
