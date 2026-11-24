@@ -85,6 +85,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         collect_pins,
         discover_tasks,
         run_scan,
+        scan_dataset,
     )
     from .scorecard import build_scorecard, write_scorecard
 
@@ -93,19 +94,6 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         return 2
 
     cheats = _select_cheats(args)
-    if args.path:
-        tasks = discover_tasks(args.path, dataset=args.dataset or "")
-    else:
-        # Dataset-only enumeration needs a harbor task listing (week-1 item);
-        # for now require -p, or treat the dataset id as a single selector.
-        from .runner import TaskRef
-
-        tasks = [TaskRef(id=args.dataset, dataset=args.dataset)]
-
-    if not tasks:
-        print("no tasks found", file=sys.stderr)
-        return 2
-
     cfg = ScanConfig(
         harbor_bin=args.harbor_bin,
         n_concurrent=args.concurrent,
@@ -116,14 +104,29 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
     )
     harness = HarborHarness()
-    controls, cells = run_scan(tasks, cheats, harness, cfg)
+
+    if args.path:
+        # Path mode: one task directory at a time (what the CI Action uses).
+        tasks = discover_tasks(args.path, dataset=args.dataset or "")
+        if not tasks:
+            print("no tasks found", file=sys.stderr)
+            return 2
+        controls, cells = run_scan(tasks, cheats, harness, cfg)
+        mode = f"path:{args.path}"
+    else:
+        # Dataset mode: one Harbor run per agent/cheat over the whole dataset.
+        if args.ablation:
+            print("note: --ablation runs in path mode only; ignored for a dataset", file=sys.stderr)
+        controls, cells = scan_dataset(args.dataset, cheats, harness, cfg)
+        mode = f"dataset:{args.dataset}"
 
     sc = build_scorecard(
         controls,
         cells,
         pins=collect_pins(cfg),
         config={
-            "tasks": len(tasks),
+            "mode": mode,
+            "tasks": len(controls),
             "cheats": len(cheats),
             "ablation": cfg.ablation,
             "dry_run": cfg.dry_run,
@@ -132,7 +135,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     written = write_scorecard(sc, args.out, sarif=args.sarif)
 
     cc = sc.cell_counts()
-    print(f"tasks: {len(tasks)}  cheats: {len(cheats)}")
+    print(f"tasks: {len(controls)}  cheats: {len(cheats)}")
     print(
         f"controls: {sc.control_counts()}\n"
         f"cells: HOLE {cc['HOLE']} · FLAKY {cc['FLAKY-HOLE']} · "

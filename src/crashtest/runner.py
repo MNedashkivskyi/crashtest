@@ -9,18 +9,23 @@ reruns -> optional ablation) is a pure function of a ``Harness``. The real
 ``harbor``-driving harness and a test fake both satisfy that interface, so the
 whole control flow is unit-tested with no Harbor and no network.
 
-Unverified against a live Harbor: the exact ``harbor run`` output
-layout and the trial JSON path. Those live only in ``HarborHarness`` and are
-isolated behind small methods so they can be pinned without touching the
-orchestration.
+Harbor writes each run to ``jobs/<timestamp>/result.json``, with per-task rewards
+under ``stats.evals[<agent>__<dataset>].reward_stats.reward`` (a map from reward
+value to the list of task ids that scored it). ``parse_result_json`` reads that
+shape. Two scan paths exist: dataset mode (``scan_dataset``) runs a whole Harbor
+dataset per agent/cheat and reads every task's reward from one ``result.json`` —
+this is what a registry dataset needs, since its tasks have no local paths; path
+mode (``run_scan``) drives one task directory at a time and is what the CI Action
+uses on a task repo. Both feed the same pure classifiers in
+:mod:`crashtest.results`.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import shlex
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -106,19 +111,64 @@ def discover_tasks(path: str, dataset: str = "") -> list[TaskRef]:
     return tasks
 
 
+# --- parsing Harbor's result.json -------------------------------------------
+
+JOBS_ROOT = "jobs"
+
+
+def _base_task_id(task_id: str) -> str:
+    """Strip Harbor's per-instance suffix: ``chess-best-move__x8Vc2Kd`` -> ``chess-best-move``."""
+    return task_id.split("__", 1)[0]
+
+
+def parse_result_json(path: str | Path) -> dict[str, float | None]:
+    """Map base task id -> reward from a Harbor ``result.json``.
+
+    Rewards live under ``stats.evals[*].reward_stats.reward`` as a map from the
+    reward value (a string like ``"1.0"``) to the list of task ids that scored it.
+    A task that errored is absent from every bucket and simply does not appear.
+    """
+    data = json.loads(Path(path).read_text())
+    out: dict[str, float | None] = {}
+    evals = (data.get("stats") or {}).get("evals") or {}
+    for ev in evals.values():
+        reward_map = ((ev.get("reward_stats") or {}).get("reward")) or {}
+        for value, ids in reward_map.items():
+            try:
+                reward = float(value)
+            except (TypeError, ValueError):
+                reward = None
+            for task_id in ids or []:
+                out[_base_task_id(task_id)] = reward
+    return out
+
+
+def _latest_result_json(since: float, jobs_root: str = JOBS_ROOT) -> str | None:
+    """Newest ``<jobs_root>/*/result.json`` produced at or after ``since`` (epoch s)."""
+    root = Path(jobs_root)
+    if not root.is_dir():
+        return None
+    fresh = [p for p in root.glob("*/result.json") if p.stat().st_mtime >= since - 1]
+    candidates = fresh or list(root.glob("*/result.json"))
+    if not candidates:
+        return None
+    return str(max(candidates, key=lambda p: p.stat().st_mtime))
+
+
 # --- the real, harbor-driving harness --------------------------------------
 
 
 class HarborHarness:
-    """Drives ``harbor run`` and parses the trial reward.
+    """Drives ``harbor run`` and reads rewards from its ``result.json``."""
 
-    The command construction, job-dir discovery and reward extraction are the
-    only Harbor-coupled parts; each is a small method to pin in week 1.
-    """
+    def __init__(self, jobs_root: str = JOBS_ROOT):
+        self.jobs_root = jobs_root
+
+    # -- path mode: one task directory per call (CI Action on a task repo) --
 
     def run(self, spec: TrialSpec, cfg: ScanConfig) -> TrialRecord:
         started = datetime.now(UTC)
-        cmd, out_dir = self.build_command(spec, cfg)
+        cmd = self.build_command(spec, cfg)
         if cfg.dry_run:
             return TrialRecord(
                 task_id=spec.task.id,
@@ -133,6 +183,7 @@ class HarborHarness:
             )
         errored = False
         timed_out = False
+        t0 = time.time()
         try:
             subprocess.run(cmd, check=False, capture_output=True, text=True)
         except subprocess.TimeoutExpired:
@@ -141,13 +192,14 @@ class HarborHarness:
             errored = True
 
         reward: float | None = None
-        applied: bool | None = None
         raw_path: str | None = None
         if not errored and not timed_out:
             try:
-                raw_path = self.find_trial_json(out_dir)
-                reward = self.extract_reward(raw_path) if raw_path else None
-                applied = self.extract_applied(out_dir) if spec.kind == TrialKind.CHEAT else None
+                raw_path = _latest_result_json(t0, self.jobs_root)
+                per_task = parse_result_json(raw_path) if raw_path else {}
+                reward = per_task.get(spec.task.id)
+                if reward is None and len(per_task) == 1:
+                    reward = next(iter(per_task.values()))
             except Exception:
                 errored = True
 
@@ -158,7 +210,6 @@ class HarborHarness:
             cheat_id=spec.cheat_id,
             attempt=spec.attempt,
             reward=reward,
-            applied=applied,
             errored=errored,
             timed_out=timed_out,
             harbor_commit=cfg.harbor_commit,
@@ -169,20 +220,9 @@ class HarborHarness:
             raw_trial_path=raw_path,
         )
 
-    # -- the seams to pin in week 1 --
-
-    def build_command(self, spec: TrialSpec, cfg: ScanConfig) -> tuple[list[str], str]:
-        out_dir = os.path.join(
-            cfg.output_root or ".crashtest-jobs",
-            f"{spec.task.id}.{spec.kind.value}.{spec.cheat_id or 'control'}.{spec.attempt}",
-        )
+    def build_command(self, spec: TrialSpec, cfg: ScanConfig) -> list[str]:
         cmd = [cfg.harbor_bin, "run"]
-        if spec.kind == TrialKind.NOP:
-            cmd += ["-a", cfg.nop_agent]
-        elif spec.kind == TrialKind.ORACLE:
-            cmd += ["-a", cfg.oracle_agent]
-        else:
-            cmd += ["-a", cfg.cheat_agent, "--ak", f"cheat={spec.cheat_id}"]
+        cmd += self._agent_args(spec.kind, spec.cheat_id, cfg)
         if spec.task.path:
             cmd += ["-p", spec.task.path]
         elif spec.task.dataset:
@@ -191,41 +231,43 @@ class HarborHarness:
             cmd += ["--task-git-commit", spec.task.git_commit]
         if cfg.agent_timeout_multiplier is not None:
             cmd += ["--agent-timeout-multiplier", str(cfg.agent_timeout_multiplier)]
-        cmd += ["--include-task-name", spec.task.id]
-        # Output flag name is unverified; pass a best-effort -o and also record
-        # out_dir so find_trial_json can look there or fall back to latest.
-        cmd += ["-o", out_dir]
-        return cmd, out_dir
+        return cmd
 
-    def find_trial_json(self, out_dir: str) -> str | None:
-        base = Path(out_dir)
-        if not base.exists():
-            return None
-        # Harbor's exact filename is unverified; pick the newest *.json that
-        # parses as a trial result.
-        candidates = sorted(base.rglob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-        return str(candidates[0]) if candidates else None
+    # -- dataset mode: one whole Harbor dataset per call (registry datasets) --
 
-    def extract_reward(self, trial_json_path: str) -> float | None:
-        data = json.loads(Path(trial_json_path).read_text())
-        # Try the documented shapes in order.
-        for key in ("reward", "score", "result"):
-            if isinstance(data, dict) and key in data:
-                val = data[key]
-                if isinstance(val, (int, float)):
-                    return float(val)
-                if isinstance(val, dict) and "reward" in val:
-                    return float(val["reward"])
-        return None
+    def build_dataset_command(
+        self, kind: TrialKind, cheat_id: str | None, dataset: str, cfg: ScanConfig
+    ) -> list[str]:
+        cmd = [cfg.harbor_bin, "run"]
+        cmd += self._agent_args(kind, cheat_id, cfg)
+        cmd += ["--dataset", dataset]
+        if cfg.agent_timeout_multiplier is not None:
+            cmd += ["--agent-timeout-multiplier", str(cfg.agent_timeout_multiplier)]
+        return cmd
 
-    def extract_applied(self, out_dir: str) -> bool | None:
-        # Read crashtest's own manifest if Harbor surfaced it in the job dir.
-        for man in Path(out_dir).rglob("crashtest.json"):
-            try:
-                return bool(json.loads(man.read_text()).get("applied"))
-            except Exception:
-                continue
-        return None
+    def run_dataset(
+        self, kind: TrialKind, cheat_id: str | None, dataset: str, cfg: ScanConfig
+    ) -> dict[str, float | None]:
+        """Run one agent/cheat over a whole dataset; return {task id -> reward}."""
+        cmd = self.build_dataset_command(kind, cheat_id, dataset, cfg)
+        if cfg.dry_run:
+            print("dry-run: " + " ".join(shlex.quote(c) for c in cmd))
+            return {}
+        t0 = time.time()
+        try:
+            subprocess.run(cmd, check=False, capture_output=True, text=True)
+        except Exception:
+            return {}
+        raw = _latest_result_json(t0, self.jobs_root)
+        return parse_result_json(raw) if raw else {}
+
+    @staticmethod
+    def _agent_args(kind: TrialKind, cheat_id: str | None, cfg: ScanConfig) -> list[str]:
+        if kind == TrialKind.NOP:
+            return ["-a", cfg.nop_agent]
+        if kind == TrialKind.ORACLE:
+            return ["-a", cfg.oracle_agent]
+        return ["-a", cfg.cheat_agent, "--ak", f"cheat={cheat_id}"]
 
 
 # --- the pure orchestration -------------------------------------------------
@@ -329,6 +371,83 @@ def run_scan(
         control, task_cells = scan_task(task, cheats, harness, cfg)
         controls.append(control)
         cells.extend(task_cells)
+    return controls, cells
+
+
+class DatasetHarness(Protocol):
+    """Runs one agent/cheat over a whole dataset and returns {task id -> reward}."""
+
+    def run_dataset(
+        self, kind: TrialKind, cheat_id: str | None, dataset: str, cfg: ScanConfig
+    ) -> dict[str, float | None]: ...
+
+
+def _scored_one(reward: float | None) -> bool:
+    return reward is not None and reward >= 1.0
+
+
+def scan_dataset(
+    dataset: str,
+    cheats: list[Cheat] | None,
+    harness: DatasetHarness,
+    cfg: ScanConfig,
+) -> tuple[list[TaskControl], list[CellResult]]:
+    """Scan every task in a Harbor dataset.
+
+    One Harbor run per agent/cheat (not per task): controls are run
+    ``control_repeats`` times, then each cheat once over the whole dataset, with
+    ``confirm_reruns`` more full-dataset runs only if any valid task was hit.
+    Per-task rewards come from each run's ``result.json``.
+    """
+    cheats = cheats if cheats is not None else all_cheats()
+
+    nop_runs = [harness.run_dataset(TrialKind.NOP, None, dataset, cfg) for _ in range(cfg.control_repeats)]
+    oracle_runs = [
+        harness.run_dataset(TrialKind.ORACLE, None, dataset, cfg) for _ in range(cfg.control_repeats)
+    ]
+
+    task_ids: set[str] = set()
+    for run in nop_runs + oracle_runs:
+        task_ids.update(run)
+
+    controls: list[TaskControl] = []
+    valid: list[str] = []
+    for task_id in sorted(task_ids):
+        nop_rewards = [run.get(task_id) for run in nop_runs]
+        oracle_rewards = [run.get(task_id) for run in oracle_runs]
+        verdict = classify_controls(nop_rewards, oracle_rewards)
+        controls.append(
+            TaskControl(
+                task_id=task_id,
+                dataset=dataset,
+                verdict=verdict,
+                nop_rewards=nop_rewards,
+                oracle_rewards=oracle_rewards,
+            )
+        )
+        if verdict == TaskVerdict.VALID:
+            valid.append(task_id)
+
+    cells: list[CellResult] = []
+    for cheat in cheats:
+        runs = [harness.run_dataset(TrialKind.CHEAT, cheat.id, dataset, cfg)]
+        # Confirm only if the cheat hit a valid task on the first pass. A rerun
+        # re-runs the whole dataset, so every task then has the full reward list.
+        if any(_scored_one(runs[0].get(t)) for t in valid):
+            for _ in range(cfg.confirm_reruns):
+                runs.append(harness.run_dataset(TrialKind.CHEAT, cheat.id, dataset, cfg))
+        for task_id in valid:
+            rewards = [run.get(task_id) for run in runs]
+            cells.append(
+                CellResult(
+                    task_id=task_id,
+                    dataset=dataset,
+                    cheat_id=cheat.id,
+                    verdict=classify_cell(rewards, applied=True),
+                    rewards=rewards,
+                    applied=True,
+                )
+            )
     return controls, cells
 
 
