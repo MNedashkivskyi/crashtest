@@ -51,17 +51,80 @@ def _cmd_selftest(args: argparse.Namespace) -> int:
     return 0 if failed == 0 else 1
 
 
+def _select_cheats(args: argparse.Namespace):
+    from .registry import all_cheats, find_cheat
+
+    if args.only:
+        return [find_cheat(cid.strip()) for cid in args.only.split(",") if cid.strip()]
+    cheats = all_cheats()
+    if args.priority:
+        cheats = [c for c in cheats if c.meta.priority == args.priority]
+    return cheats
+
+
 def _cmd_scan(args: argparse.Namespace) -> int:
-    try:
-        from .runner import run_scan  # noqa: F401
-    except Exception:
-        print(
-            "crashtest scan is not available yet in this build "
-            "(the runner lands in a later PR).",
-            file=sys.stderr,
-        )
+    from .runner import (
+        HarborHarness,
+        ScanConfig,
+        collect_pins,
+        discover_tasks,
+        run_scan,
+    )
+    from .scorecard import build_scorecard, write_scorecard
+
+    if not args.path and not args.dataset:
+        print("scan needs -p/--path or -d/--dataset", file=sys.stderr)
         return 2
-    return run_scan(args)  # pragma: no cover - wired up with the runner
+
+    cheats = _select_cheats(args)
+    if args.path:
+        tasks = discover_tasks(args.path, dataset=args.dataset or "")
+    else:
+        # Dataset-only enumeration needs a harbor task listing (week-1 item);
+        # for now require -p, or treat the dataset id as a single selector.
+        from .runner import TaskRef
+
+        tasks = [TaskRef(id=args.dataset, dataset=args.dataset)]
+
+    if not tasks:
+        print("no tasks found", file=sys.stderr)
+        return 2
+
+    cfg = ScanConfig(
+        harbor_bin=args.harbor_bin,
+        n_concurrent=args.concurrent,
+        harbor_commit=args.harbor_commit,
+        dataset_commit=args.dataset_commit,
+        image_digest=args.image_digest,
+        ablation=args.ablation,
+        dry_run=args.dry_run,
+    )
+    harness = HarborHarness()
+    controls, cells = run_scan(tasks, cheats, harness, cfg)
+
+    sc = build_scorecard(
+        controls,
+        cells,
+        pins=collect_pins(cfg),
+        config={
+            "tasks": len(tasks),
+            "cheats": len(cheats),
+            "ablation": cfg.ablation,
+            "dry_run": cfg.dry_run,
+        },
+    )
+    written = write_scorecard(sc, args.out, sarif=args.sarif)
+
+    cc = sc.cell_counts()
+    print(f"tasks: {len(tasks)}  cheats: {len(cheats)}")
+    print(
+        f"controls: {sc.control_counts()}\n"
+        f"cells: HOLE {cc['HOLE']} · FLAKY {cc['FLAKY-HOLE']} · "
+        f"DEFENDED {cc['DEFENDED']} · N-A {cc['N-A']} · ERROR {cc['ERROR']}"
+    )
+    print("wrote: " + ", ".join(written))
+    # Exit non-zero if any confirmed hole, so CI fails the gate.
+    return 1 if sc.tasks_with_hole() else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -82,8 +145,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("-p", "--path", help="path to a task or a directory of tasks")
     p_scan.add_argument("-d", "--dataset", help="Harbor dataset id, e.g. terminal-bench@2.0")
     p_scan.add_argument("--only", help="comma-separated cheat ids to run")
-    p_scan.add_argument("--priority", help="run only cheats of this priority (P0/P1/P2)")
+    p_scan.add_argument("--priority", choices=["P0", "P1", "P2"], help="run only this priority")
     p_scan.add_argument("-o", "--out", default="scorecard", help="output path prefix")
+    p_scan.add_argument("--sarif", action="store_true", help="also write a SARIF file")
+    p_scan.add_argument("--ablation", action="store_true", help="rerun each HOLE under its defenses")
+    p_scan.add_argument("--dry-run", action="store_true", help="print harbor commands, run nothing")
+    p_scan.add_argument("--harbor-bin", default="harbor", help="harbor executable")
+    p_scan.add_argument("--concurrent", type=int, default=1, help="concurrent trials")
+    p_scan.add_argument("--harbor-commit", help="pin: harbor commit/version")
+    p_scan.add_argument("--dataset-commit", help="pin: dataset commit")
+    p_scan.add_argument("--image-digest", help="pin: image digest")
     p_scan.set_defaults(func=_cmd_scan)
 
     return p
