@@ -211,3 +211,28 @@ def test_scan_dataset_skips_reruns_when_defended():
     scan_dataset("ds", [_Cheat("safe")], h, ScanConfig())
     cheat_calls = [c for c in h.calls if c[0] == TrialKind.CHEAT]
     assert cheat_calls == [(TrialKind.CHEAT, "safe")]  # ran once, no confirmation reruns
+
+
+def test_result_path_from_output():
+    from crashtest.runner import result_path_from_output
+
+    out = (
+        "  10/10 Mean: 0.700\n"
+        "Job Info\n"
+        "Total runtime: 3m 22s\n"
+        "Results written to jobs/2026-11-24__17-42-45/result.json\n"
+        "Inspect results by running `harbor view jobs`\n"
+    )
+    assert result_path_from_output(out) == "jobs/2026-11-24__17-42-45/result.json"
+    assert result_path_from_output("no path here") is None
+
+
+def test_run_complete(tmp_path):
+    from crashtest.runner import _run_complete
+
+    done = tmp_path / "done.json"
+    done.write_text(json.dumps({"finished_at": "2026-11-24T18:00:00", "stats": {"n_running_trials": 0}}))
+    running = tmp_path / "running.json"
+    running.write_text(json.dumps({"finished_at": None, "stats": {"n_running_trials": 4}}))
+    assert _run_complete(done) is True
+    assert _run_complete(running) is False
