@@ -14,10 +14,10 @@ crashtest scan   -p <path> [opts]    # the real matrix: controls + cheats via `h
 | flag | meaning |
 | --- | --- |
 | `-p/--path` | a task dir, or a directory of task dirs |
-| `-d/--dataset` | a Harbor dataset id (task enumeration is a week-1 item; prefer `-p`) |
+| `-d/--dataset` | a Harbor dataset id, e.g. `terminal-bench@2.0` — runs the whole dataset per agent/cheat and reads each task's reward from `result.json` |
 | `--priority P0\|P1\|P2` | run only cheats of this priority |
 | `--only c03_tests_preplant,c05_path_shim` | run specific cheats |
-| `--ablation` | rerun each HOLE under its expected defenses (builds the defense matrix) |
+| `--ablation` | rerun each HOLE under its expected defenses (builds the defense matrix); path mode only |
 | `--sarif` | also write `scorecard.sarif` for code-scanning |
 | `--dry-run` | print the `harbor run` commands, run nothing (works with no Harbor) |
 | `--harbor-commit/--dataset-commit/--image-digest` | determinism pins for the scorecard header |

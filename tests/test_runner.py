@@ -1,5 +1,6 @@
 """Runner orchestration tests, driven by a fake harness (no Harbor)."""
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -9,6 +10,8 @@ from crashtest.runner import (
     TaskRef,
     TrialSpec,
     discover_tasks,
+    parse_result_json,
+    scan_dataset,
     scan_task,
 )
 
@@ -138,3 +141,73 @@ def test_discover_single_task(tmp_path):
     (tmp_path / "solution").mkdir()
     tasks = discover_tasks(str(tmp_path))
     assert len(tasks) == 1 and tasks[0].id == tmp_path.name
+
+
+# --- dataset mode -----------------------------------------------------------
+
+
+def test_parse_result_json(tmp_path):
+    # mirrors the shape Harbor actually writes
+    doc = {
+        "stats": {
+            "evals": {
+                "oracle__terminal-bench-sample": {
+                    "metrics": [{"mean": 0.7}],
+                    "reward_stats": {
+                        "reward": {
+                            "1.0": ["chess-best-move__x8Vc2Kd", "regex-log__uHpw8q7"],
+                            "0.0": ["qemu-startup__vX4KMTy"],
+                        }
+                    },
+                }
+            }
+        }
+    }
+    p = tmp_path / "result.json"
+    p.write_text(json.dumps(doc))
+    per = parse_result_json(p)
+    assert per == {"chess-best-move": 1.0, "regex-log": 1.0, "qemu-startup": 0.0}
+
+
+class FakeDatasetHarness:
+    def __init__(self, fn):
+        self.fn = fn
+        self.calls = []
+
+    def run_dataset(self, kind, cheat_id, dataset, cfg):
+        self.calls.append((kind, cheat_id))
+        return self.fn(kind, cheat_id)
+
+
+def _dataset_fn(kind, cheat_id):
+    if kind == TrialKind.NOP:
+        return {"t1": 0.0, "t2": 0.0}
+    if kind == TrialKind.ORACLE:
+        return {"t1": 1.0, "t2": 0.0}  # t1 valid, t2 broken-oracle
+    if cheat_id == "hole":
+        return {"t1": 1.0, "t2": 1.0}
+    return {"t1": 0.0, "t2": 0.0}  # "safe"
+
+
+def test_scan_dataset_gating_and_verdicts():
+    controls, cells = scan_dataset(
+        "ds", [_Cheat("hole"), _Cheat("safe")], FakeDatasetHarness(_dataset_fn), ScanConfig()
+    )
+    cmap = {c.task_id: c.verdict for c in controls}
+    assert cmap["t1"] == TaskVerdict.VALID
+    assert cmap["t2"] == TaskVerdict.BROKEN_ORACLE
+
+    # only the valid task gets cells
+    assert {c.task_id for c in cells} == {"t1"}
+    by = {c.cheat_id: c for c in cells}
+    assert by["hole"].verdict == CellVerdict.HOLE
+    assert by["hole"].rewards == [1.0, 1.0, 1.0]
+    assert by["safe"].verdict == CellVerdict.DEFENDED
+    assert by["safe"].rewards == [0.0]  # no reruns when nothing hit
+
+
+def test_scan_dataset_skips_reruns_when_defended():
+    h = FakeDatasetHarness(_dataset_fn)
+    scan_dataset("ds", [_Cheat("safe")], h, ScanConfig())
+    cheat_calls = [c for c in h.calls if c[0] == TrialKind.CHEAT]
+    assert cheat_calls == [(TrialKind.CHEAT, "safe")]  # ran once, no confirmation reruns
