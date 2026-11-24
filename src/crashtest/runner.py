@@ -9,7 +9,7 @@ reruns -> optional ablation) is a pure function of a ``Harness``. The real
 ``harbor``-driving harness and a test fake both satisfy that interface, so the
 whole control flow is unit-tested with no Harbor and no network.
 
-WEEK-1 / unverified (see docs/open-questions.md): the exact ``harbor run`` output
+Unverified against a live Harbor: the exact ``harbor run`` output
 layout and the trial JSON path. Those live only in ``HarborHarness`` and are
 isolated behind small methods so they can be pinned without touching the
 orchestration.
