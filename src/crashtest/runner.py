@@ -23,6 +23,7 @@ uses on a task repo. Both feed the same pure classifiers in
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import subprocess
 import time
@@ -115,6 +116,27 @@ def discover_tasks(path: str, dataset: str = "") -> list[TaskRef]:
 
 JOBS_ROOT = "jobs"
 
+# Harbor prints this on every run; it is the reliable way to find *this* run's
+# output (mtime-based guessing races when runs overlap or the file is written
+# incrementally).
+_RESULT_PATH_RE = re.compile(r"Results written to (\S+result\.json)")
+
+
+def result_path_from_output(text: str) -> str | None:
+    """Pull the ``Results written to <path>`` line out of harbor's stdout/stderr."""
+    matches = _RESULT_PATH_RE.findall(text or "")
+    return matches[-1] if matches else None
+
+
+def _run_complete(path: str | Path) -> bool:
+    """True if a result.json is a finished run (no trials still running)."""
+    try:
+        data = json.loads(Path(path).read_text())
+    except Exception:
+        return False
+    stats = data.get("stats") or {}
+    return data.get("finished_at") is not None and not stats.get("n_running_trials")
+
 
 def _base_task_id(task_id: str) -> str:
     """Strip Harbor's per-instance suffix: ``chess-best-move__x8Vc2Kd`` -> ``chess-best-move``."""
@@ -184,8 +206,10 @@ class HarborHarness:
         errored = False
         timed_out = False
         t0 = time.time()
+        output = ""
         try:
-            subprocess.run(cmd, check=False, capture_output=True, text=True)
+            proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+            output = (proc.stdout or "") + (proc.stderr or "")
         except subprocess.TimeoutExpired:
             timed_out = True
         except Exception:
@@ -195,11 +219,13 @@ class HarborHarness:
         raw_path: str | None = None
         if not errored and not timed_out:
             try:
-                raw_path = _latest_result_json(t0, self.jobs_root)
+                raw_path = self._result_path(output, t0)
                 per_task = parse_result_json(raw_path) if raw_path else {}
                 reward = per_task.get(spec.task.id)
                 if reward is None and len(per_task) == 1:
                     reward = next(iter(per_task.values()))
+                if raw_path is None:
+                    errored = True  # could not locate this run's output
             except Exception:
                 errored = True
 
@@ -255,11 +281,29 @@ class HarborHarness:
             return {}
         t0 = time.time()
         try:
-            subprocess.run(cmd, check=False, capture_output=True, text=True)
+            proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+            output = (proc.stdout or "") + (proc.stderr or "")
         except Exception:
             return {}
-        raw = _latest_result_json(t0, self.jobs_root)
+        raw = self._result_path(output, t0)
         return parse_result_json(raw) if raw else {}
+
+    def _result_path(self, output: str, since: float) -> str | None:
+        """The result.json for the run that just finished.
+
+        Prefer the exact path harbor printed (immune to overlapping runs); fall
+        back to the newest file only if that line is missing. Ignore a file that
+        is not a completed run.
+        """
+        path = result_path_from_output(output)
+        if path and Path(path).is_file() and _run_complete(path):
+            return path
+        if path and Path(path).is_file():
+            return path  # printed but completeness unknown; still the right run
+        fallback = _latest_result_json(since, self.jobs_root)
+        if fallback and _run_complete(fallback):
+            return fallback
+        return None
 
     @staticmethod
     def _agent_args(kind: TrialKind, cheat_id: str | None, cfg: ScanConfig) -> list[str]:
