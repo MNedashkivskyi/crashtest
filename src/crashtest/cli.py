@@ -79,6 +79,8 @@ def _cmd_static(args: argparse.Namespace) -> int:
 
 
 def _cmd_scan(args: argparse.Namespace) -> int:
+    import os
+
     from .runner import (
         HarborHarness,
         ScanConfig,
@@ -87,7 +89,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         run_scan,
         scan_dataset,
     )
-    from .scorecard import build_scorecard, write_scorecard
+    from .scorecard import build_scorecard, load_scorecard, write_scorecard
 
     if not args.path and not args.dataset:
         print("scan needs -p/--path or -d/--dataset", file=sys.stderr)
@@ -97,6 +99,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     cfg = ScanConfig(
         harbor_bin=args.harbor_bin,
         n_concurrent=args.concurrent,
+        timeout_multiplier=args.timeout_multiplier,
         harbor_commit=args.harbor_commit,
         dataset_commit=args.dataset_commit,
         image_digest=args.image_digest,
@@ -104,6 +107,21 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
     )
     harness = HarborHarness()
+    pins = collect_pins(cfg)
+
+    def _make_scorecard(controls, cells, mode):
+        return build_scorecard(
+            controls,
+            cells,
+            pins=pins,
+            config={
+                "mode": mode,
+                "tasks": len(controls),
+                "cheats": len(cheats),
+                "ablation": cfg.ablation,
+                "dry_run": cfg.dry_run,
+            },
+        )
 
     if args.path:
         # Path mode: one task directory at a time (what the CI Action uses).
@@ -117,21 +135,31 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         # Dataset mode: one Harbor run per agent/cheat over the whole dataset.
         if args.ablation:
             print("note: --ablation runs in path mode only; ignored for a dataset", file=sys.stderr)
-        controls, cells = scan_dataset(args.dataset, cheats, harness, cfg)
         mode = f"dataset:{args.dataset}"
 
-    sc = build_scorecard(
-        controls,
-        cells,
-        pins=collect_pins(cfg),
-        config={
-            "mode": mode,
-            "tasks": len(controls),
-            "cheats": len(cheats),
-            "ablation": cfg.ablation,
-            "dry_run": cfg.dry_run,
-        },
-    )
+        resume_controls = resume_cells = None
+        if args.resume and os.path.isfile(f"{args.out}.json"):
+            prev = load_scorecard(f"{args.out}.json")
+            resume_controls, resume_cells = prev.controls, prev.cells
+            done = sorted({c.cheat_id for c in prev.cells})
+            print(f"resuming from {args.out}.json ({len(done)} cheats already done)")
+
+        # Flush the scorecard after controls and after each cheat, so a crash
+        # mid-run keeps everything already computed (and --resume can continue).
+        def _flush(controls, cells):
+            write_scorecard(_make_scorecard(controls, cells, mode), args.out, sarif=args.sarif)
+
+        controls, cells = scan_dataset(
+            args.dataset,
+            cheats,
+            harness,
+            cfg,
+            on_update=_flush,
+            resume_controls=resume_controls,
+            resume_cells=resume_cells,
+        )
+
+    sc = _make_scorecard(controls, cells, mode)
     written = write_scorecard(sc, args.out, sarif=args.sarif)
 
     cc = sc.cell_counts()
@@ -176,7 +204,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("--ablation", action="store_true", help="rerun each HOLE under its defenses")
     p_scan.add_argument("--dry-run", action="store_true", help="print harbor commands, run nothing")
     p_scan.add_argument("--harbor-bin", default="harbor", help="harbor executable")
-    p_scan.add_argument("--concurrent", type=int, default=1, help="concurrent trials")
+    p_scan.add_argument(
+        "--concurrent", type=int, default=None,
+        help="harbor --n-concurrent (default: harbor's own, 4). Set to your vCPU count.",
+    )
+    p_scan.add_argument(
+        "--timeout-multiplier", type=float, default=None,
+        help="harbor --timeout-multiplier (raise if heavy tasks time out)",
+    )
+    p_scan.add_argument(
+        "--resume", action="store_true",
+        help="dataset mode: reuse <out>.json, skip cheats already done",
+    )
     p_scan.add_argument("--harbor-commit", help="pin: harbor commit/version")
     p_scan.add_argument("--dataset-commit", help="pin: dataset commit")
     p_scan.add_argument("--image-digest", help="pin: image digest")

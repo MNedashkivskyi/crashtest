@@ -26,6 +26,7 @@ import json
 import re
 import shlex
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -73,8 +74,10 @@ class ScanConfig:
     nop_agent: str = "nop"
     oracle_agent: str = "oracle"
     cheat_agent: str = "crashtest.agent:CheatAgent"
-    n_concurrent: int = 1
+    # None => let harbor use its own default (currently 4). Set to match vCPUs.
+    n_concurrent: int | None = None
     agent_timeout_multiplier: float | None = None
+    timeout_multiplier: float | None = None
     # Determinism pins, copied into every record and the scorecard header.
     harbor_commit: str | None = None
     dataset_commit: str | None = None
@@ -253,6 +256,10 @@ class HarborHarness:
         cmd = [cfg.harbor_bin, "run"]
         cmd += self._agent_args(kind, cheat_id, cfg)
         cmd += ["--dataset", dataset]
+        if cfg.n_concurrent is not None:
+            cmd += ["--n-concurrent", str(cfg.n_concurrent)]
+        if cfg.timeout_multiplier is not None:
+            cmd += ["--timeout-multiplier", str(cfg.timeout_multiplier)]
         if cfg.agent_timeout_multiplier is not None:
             cmd += ["--agent-timeout-multiplier", str(cfg.agent_timeout_multiplier)]
         return cmd
@@ -417,6 +424,10 @@ def scan_dataset(
     cheats: list[Cheat] | None,
     harness: DatasetHarness,
     cfg: ScanConfig,
+    *,
+    on_update: Callable[[list[TaskControl], list[CellResult]], None] | None = None,
+    resume_controls: list[TaskControl] | None = None,
+    resume_cells: list[CellResult] | None = None,
 ) -> tuple[list[TaskControl], list[CellResult]]:
     """Scan every task in a Harbor dataset.
 
@@ -424,38 +435,56 @@ def scan_dataset(
     ``control_repeats`` times, then each cheat once over the whole dataset, with
     ``confirm_reruns`` more full-dataset runs only if any valid task was hit.
     Per-task rewards come from each run's ``result.json``.
+
+    ``on_update`` is called after controls and after each cheat with the results
+    so far, so the caller can flush a scorecard incrementally (a crash mid-run
+    then keeps everything already computed). ``resume_controls``/``resume_cells``
+    let a restart skip the controls and any cheats already done.
     """
     cheats = cheats if cheats is not None else all_cheats()
 
-    nop_runs = [harness.run_dataset(TrialKind.NOP, None, dataset, cfg) for _ in range(cfg.control_repeats)]
-    oracle_runs = [
-        harness.run_dataset(TrialKind.ORACLE, None, dataset, cfg) for _ in range(cfg.control_repeats)
-    ]
-
-    task_ids: set[str] = set()
-    for run in nop_runs + oracle_runs:
-        task_ids.update(run)
-
-    controls: list[TaskControl] = []
-    valid: list[str] = []
-    for task_id in sorted(task_ids):
-        nop_rewards = [run.get(task_id) for run in nop_runs]
-        oracle_rewards = [run.get(task_id) for run in oracle_runs]
-        verdict = classify_controls(nop_rewards, oracle_rewards)
-        controls.append(
-            TaskControl(
-                task_id=task_id,
-                dataset=dataset,
-                verdict=verdict,
-                nop_rewards=nop_rewards,
-                oracle_rewards=oracle_rewards,
+    # --- resume: reuse prior controls, skip already-done cheats ---
+    if resume_controls is not None:
+        controls = list(resume_controls)
+        valid = [c.task_id for c in controls if c.verdict == TaskVerdict.VALID]
+    else:
+        nop_runs = [
+            harness.run_dataset(TrialKind.NOP, None, dataset, cfg)
+            for _ in range(cfg.control_repeats)
+        ]
+        oracle_runs = [
+            harness.run_dataset(TrialKind.ORACLE, None, dataset, cfg)
+            for _ in range(cfg.control_repeats)
+        ]
+        task_ids: set[str] = set()
+        for run in nop_runs + oracle_runs:
+            task_ids.update(run)
+        controls = []
+        valid = []
+        for task_id in sorted(task_ids):
+            nop_rewards = [run.get(task_id) for run in nop_runs]
+            oracle_rewards = [run.get(task_id) for run in oracle_runs]
+            verdict = classify_controls(nop_rewards, oracle_rewards)
+            controls.append(
+                TaskControl(
+                    task_id=task_id,
+                    dataset=dataset,
+                    verdict=verdict,
+                    nop_rewards=nop_rewards,
+                    oracle_rewards=oracle_rewards,
+                )
             )
-        )
-        if verdict == TaskVerdict.VALID:
-            valid.append(task_id)
+            if verdict == TaskVerdict.VALID:
+                valid.append(task_id)
 
-    cells: list[CellResult] = []
+    cells: list[CellResult] = list(resume_cells or [])
+    done_cheat_ids = {c.cheat_id for c in cells}
+    if on_update is not None:
+        on_update(controls, cells)
+
     for cheat in cheats:
+        if cheat.id in done_cheat_ids:
+            continue  # already computed in a previous (resumed) run
         runs = [harness.run_dataset(TrialKind.CHEAT, cheat.id, dataset, cfg)]
         # Confirm only if the cheat hit a valid task on the first pass. A rerun
         # re-runs the whole dataset, so every task then has the full reward list.
@@ -474,6 +503,9 @@ def scan_dataset(
                     applied=True,
                 )
             )
+        if on_update is not None:
+            on_update(controls, cells)  # flush after each cheat
+
     return controls, cells
 
 

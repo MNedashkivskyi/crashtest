@@ -4,7 +4,14 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from crashtest.results import CellVerdict, TaskVerdict, TrialKind, TrialRecord
+from crashtest.results import (
+    CellResult,
+    CellVerdict,
+    TaskControl,
+    TaskVerdict,
+    TrialKind,
+    TrialRecord,
+)
 from crashtest.runner import (
     ScanConfig,
     TaskRef,
@@ -236,3 +243,35 @@ def test_run_complete(tmp_path):
     running.write_text(json.dumps({"finished_at": None, "stats": {"n_running_trials": 4}}))
     assert _run_complete(done) is True
     assert _run_complete(running) is False
+
+
+def test_scan_dataset_flushes_after_controls_and_each_cheat():
+    updates = []
+    scan_dataset(
+        "ds", [_Cheat("hole"), _Cheat("safe")], FakeDatasetHarness(_dataset_fn), ScanConfig(),
+        on_update=lambda c, ce: updates.append(len(ce)),
+    )
+    # one flush after controls (0 cells) + one after each of 2 cheats
+    assert len(updates) == 3
+    assert updates[0] == 0
+
+
+def test_scan_dataset_resume_skips_controls_and_done_cheats():
+    h = FakeDatasetHarness(_dataset_fn)
+    controls = [
+        TaskControl(task_id="t1", dataset="ds", verdict=TaskVerdict.VALID),
+        TaskControl(task_id="t2", dataset="ds", verdict=TaskVerdict.BROKEN_ORACLE),
+    ]
+    done = [
+        CellResult(task_id="t1", dataset="ds", cheat_id="hole",
+                   verdict=CellVerdict.HOLE, rewards=[1.0, 1.0, 1.0], applied=True)
+    ]
+    _controls, cells = scan_dataset(
+        "ds", [_Cheat("hole"), _Cheat("safe")], h, ScanConfig(),
+        resume_controls=controls, resume_cells=done,
+    )
+    # controls reused -> no nop/oracle runs
+    assert not any(k in (TrialKind.NOP, TrialKind.ORACLE) for k, _ in h.calls)
+    # "hole" already done -> only "safe" runs
+    assert [c for c in h.calls if c[0] == TrialKind.CHEAT] == [(TrialKind.CHEAT, "safe")]
+    assert {c.cheat_id for c in cells} == {"hole", "safe"}
