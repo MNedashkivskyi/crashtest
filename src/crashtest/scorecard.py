@@ -58,6 +58,13 @@ class Scorecard(BaseModel):
         return sorted({c.task_id for c in self.cells if c.verdict == CellVerdict.HOLE})
 
 
+def load_scorecard(path: str) -> Scorecard:
+    """Load a previously written scorecard.json (for --resume)."""
+    from pathlib import Path
+
+    return Scorecard.model_validate_json(Path(path).read_text())
+
+
 def build_scorecard(
     controls: list[TaskControl],
     cells: list[CellResult],
